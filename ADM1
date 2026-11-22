@@ -1,0 +1,161 @@
+# Import packages
+import matplotlib.pyplot as plt
+import numpy as np
+from pathlib import Path
+from chemicals.elements import molecular_weight as get_mw
+from qsdsan import unit_operations as su, process_models as pc, WasteStream, System
+from qsdsan.utils import time_printer
+
+# Components
+cmps = pc.create_adm1_cmps()           # create state variables for ADM1
+#cmps.show()                            # 26 components in ADM1 + water
+
+# Processes
+adm1 = pc.ADM1()                       # create ADM1 processes
+#adm1.show()                            # 22 processes in ADM1
+
+#Stream Conditions
+Temp = 273.15+35                                    # temperature [K]
+inf = WasteStream('Influent', T=Temp)               # influent
+eff = WasteStream('Effluent', T=Temp)               # effluent
+gas = WasteStream('Biogas')                         # gas
+
+# Set influent flowrate and concentration
+C_mw = get_mw({'C':1})        # molecular weight of carbon
+N_mw = get_mw({'N':1})        # molecular weight of nitrogen
+
+Q = 170                                             # influent flowrate [m3/d]
+default_inf_kwargs = {
+    'concentrations': {
+        'S_su':0.01,
+        'S_aa':1e-3,
+        'S_fa':1e-3,
+        'S_va':1e-3,
+        'S_bu':1e-3,
+        'S_pro':1e-3,
+        'S_ac':1e-3,
+        'S_h2':1e-8,
+        'S_ch4':1e-5,
+        'S_IC':0.04*C_mw,
+        'S_IN':0.01*N_mw,
+        'S_I':0.02,
+        'X_c':2.0,
+        'X_ch':5.0,
+        'X_pr':20.0,
+        'X_li':5.0,
+        'X_aa':1e-2,
+        'X_fa':1e-2,
+        'X_c4':1e-2,
+        'X_pro':1e-2,
+        'X_ac':1e-2,
+        'X_h2':1e-2,
+        'X_I':25,
+        'S_cat':0.04,
+        'S_an':0.02,
+        },
+    'units': ('m3/d', 'kg/m3'),
+    }                                                           # concentration of each state variable in influent
+
+inf.set_flow_by_concentration(Q, **default_inf_kwargs)          # set influent concentration
+inf.show()                                                        # show influent stream   
+
+# Assume an HRT of 5 days, and the gas volume is 10% of the liquid volume in the reactor
+HRT = 5
+
+AD = su.AnaerobicCSTR('AD', ins=inf, outs=(gas, eff), model=adm1, V_liq=Q*HRT, V_gas=Q*HRT*0.1, T=Temp)
+
+# anaerobic CSTR with influent, effluent, and biogas
+# before running the simulation, 'outs' have nothing
+#AD.show()
+
+# Set the initial condition of the reactor,
+# the closer the intial condition is to the steady state,
+# the faster the simulation will converge.
+default_init_conds = {
+    'S_su': 0.0124*1e3,
+    'S_aa': 0.0055*1e3,
+    'S_fa': 0.1074*1e3,
+    'S_va': 0.0123*1e3,
+    'S_bu': 0.0140*1e3,
+    'S_pro': 0.0176*1e3,
+    'S_ac': 0.0893*1e3,
+    'S_h2': 2.5055e-7*1e3,
+    'S_ch4': 0.0555*1e3,
+    'S_IC': 0.0951*C_mw*1e3,
+    'S_IN': 0.0945*N_mw*1e3,
+    'S_I': 0.1309*1e3,
+    'X_ch': 0.0205*1e3,
+    'X_pr': 0.0842*1e3,
+    'X_li': 0.0436*1e3,
+    'X_su': 0.3122*1e3,
+    'X_aa': 0.9317*1e3,
+    'X_fa': 0.3384*1e3,
+    'X_c4': 0.3258*1e3,
+    'X_pro': 0.1011*1e3,
+    'X_ac': 0.6772*1e3,
+    'X_h2': 0.2848*1e3,
+    'X_I': 17.2162*1e3
+    }
+
+AD.set_init_conc(**default_init_conds)
+
+# We need to include the reactor in a system to run the dynamic simulation,
+# and we need to tell the system what we want to track.
+sys = System('Anaerobic_Digestion', path=(AD,))                 # aggregation of unit operations
+sys.set_dynamic_tracker(eff, gas)                               # what you want to track changes in concentration
+sys.show()                                                     # before running the simulation, 'outs' have nothing
+
+# Simulation settings
+t = 10                          # total time for simulation
+t_step = 0.1                    # times at which to store the computed solution
+method = 'BDF'                  # integration method to use
+# method = 'RK45'
+# method = 'RK23'
+# method = 'DOP853'
+# method = 'Radau'
+# method = 'LSODA'
+
+# Run simulation, you can use `export_state_to` to export the simulation result as an excel file.
+sys.simulate(state_reset_hook='reset_cache',
+             t_span=(0,t),
+             t_eval=np.arange(0, t+t_step, t_step),
+             method=method,
+            )
+
+# Now you have 'outs' info.
+#sys.show()
+
+plot_dir = Path("plots")
+plot_dir.mkdir(exist_ok=True)
+
+def plot_and_save(scope, variables, filename):
+    fig, ax = scope.plot_time_series(variables)
+    fig.set_size_inches(8, 4)
+    for line in ax.get_lines():
+        line.set_linewidth(1)
+        line.set_markersize(3)
+    legend = ax.get_legend()
+    if legend is not None:
+        for text in legend.get_texts():
+            text.set_fontsize(8)
+    ax.tick_params(labelsize=8)
+    fig.tight_layout()
+    fig.savefig(plot_dir / filename, dpi=300, bbox_inches="tight")
+    plt.show()
+    plt.close(fig)
+
+# Track how each state variable changes over time
+plot_and_save(eff.scope, ('S_aa', 'S_fa', 'S_va', 'S_bu', 'S_pro', 'S_ac'),
+              "effluent_vfas.png")
+
+# Inorganic carbon and inorganic nitrogen
+plot_and_save(eff.scope, ('S_IC', 'S_IN'), "effluent_inorganics.png")
+
+# Biomass
+plot_and_save(eff.scope, ('X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2'),
+              "effluent_biomass.png")
+
+# Gases
+plot_and_save(gas.scope, ('S_h2',), "gas_hydrogen.png")
+plot_and_save(gas.scope, ('S_ch4', 'S_IC'), "gas_methane_carbon.png")
+

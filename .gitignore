@@ -1,0 +1,38 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# --- Ambientes virtuais ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Referência bibliográfica: mantida no disco, fora do histórico ---
+*.pdf
+
+# --- Arquivos grandes / compactados ---
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+
+# --- Sistema operacional ---
+Thumbs.db
+ehthumbs.db
+desktop.ini
+.DS_Store
+
+# --- Editores ---
+.vscode/
+.idea/
+*.swp

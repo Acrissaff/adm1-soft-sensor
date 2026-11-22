@@ -1,0 +1,201 @@
+#Import packages
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+from pathlib import Path
+from chemicals.elements import molecular_weight as get_mw
+from qsdsan import unit_operations as su, process_models as pc, WasteStream, System
+from qsdsan.process_models import mass2mol_conversion, T_correction_factor
+from qsdsan.utils import time_printer
+from qsdsan.unit_operations import DynamicInfluent as DI
+
+
+
+# Components
+cmps = pc.create_adm1_cmps()           # create state variables for ADM1
+#cmps.show()                            # 26 components in ADM1 + water
+
+# Processes
+adm1 = pc.ADM1()                       # create ADM1 processes
+#adm1.show()                            # 22 processes in ADM1
+
+
+#Stream Conditions
+Temp = 273.15+35                                    # temperature [K]
+inf = WasteStream('Influent', T=Temp)               # influent
+eff = WasteStream('Effluent', T=Temp)               # effluent
+gas = WasteStream('Biogas')                         # gas
+
+#Dynamic Influent
+#DI1 = DI(outs=(inf, ))
+
+#Carregando os dados de entrada do influente, gerados pelo Dynamic_builder
+df_influent = r'C:\Users\ACRIS\Documents\0 - PEQ\Cursos\Aprendizado de Máquina\Projeto\influent_data.csv'
+dyn_influent = DI(ID = 'dyn_influent', 
+             outs=(inf, ), 
+             data_file = df_influent 
+             )
+
+#inf.show()                                                        # show influent stream   
+
+# Set influent flowrate and concentration
+C_mw = get_mw({'C':1})        # molecular weight of carbon
+N_mw = get_mw({'N':1})        # molecular weight of nitrogen
+Q = 170
+# Assume an HRT of 5 days, and the gas volume is 10% of the liquid volume in the reactor
+HRT = 5
+AD = su.AnaerobicCSTR('AD', ins=(inf,), outs=(gas, eff), model=adm1, V_liq=Q*HRT, V_gas=Q*HRT*0.1, T=Temp)
+
+# anaerobic CSTR with influent, effluent, and biogas
+# before running the simulation, 'outs' have nothing
+#AD.show()
+
+# Set the initial condition of the reactor,
+# the closer the intial condition is to the steady state,
+# the faster the simulation will converge.
+default_init_conds = {
+    'S_su': 0.0124*1e3,
+    'S_aa': 0.0055*1e3,
+    'S_fa': 0.1074*1e3,
+    'S_va': 0.0123*1e3,
+    'S_bu': 0.0140*1e3,
+    'S_pro': 0.0176*1e3,
+    'S_ac': 0.0893*1e3,
+    'S_h2': 2.5055e-7*1e3,
+    'S_ch4': 0.0555*1e3,
+    'S_IC': 0.0951*C_mw*1e3,
+    'S_IN': 0.0945*N_mw*1e3,
+    'S_I': 0.1309*1e3,
+    'X_ch': 0.0205*1e3,
+    'X_pr': 0.0842*1e3,
+    'X_li': 0.0436*1e3,
+    'X_su': 0.3122*1e3,
+    'X_aa': 0.9317*1e3,
+    'X_fa': 0.3384*1e3,
+    'X_c4': 0.3258*1e3,
+    'X_pro': 0.1011*1e3,
+    'X_ac': 0.6772*1e3,
+    'X_h2': 0.2848*1e3,
+    'X_I': 17.2162*1e3
+    }
+
+AD.set_init_conc(**default_init_conds)
+
+# We need to include the reactor in a system to run the dynamic simulation,
+# and we need to tell the system what we want to track.
+sys = System('Anaerobic_Digestion', path=(dyn_influent, AD))     # aggregation of unit operations
+sys.set_dynamic_tracker(inf, eff, gas )                               # what you want to track changes in concentration
+sys.show()                                                     # before running the simulation, 'outs' have nothing
+
+# Simulation settings
+t = 10                          # total time for simulation
+t_step = 1/24                    # times at which to store the computed solution
+method = 'BDF'                  # integration method to use
+# method = 'RK45'
+# method = 'RK23'
+# method = 'DOP853'
+# method = 'Radau'
+# method = 'LSODA'
+
+# Run simulation, you can use `export_state_to` to export the simulation result as an excel file.
+sys.simulate(state_reset_hook='reset_cache',
+             t_span=(0,t),
+             t_eval=np.arange(0, t+t_step, t_step),
+             method=method,
+            )
+
+# WasteStreamScope stores concentrations in mg/L; solve_pH expects kg/m3.
+adm1_params = adm1.rate_function.params
+Ka = adm1_params['Ka_base'] * T_correction_factor(
+    adm1_params['T_base'], Temp, adm1_params['Ka_dH'])
+unit_conversion = mass2mol_conversion(cmps)
+
+# Todos os instantes registrados: remove a coluna Q, mg/L -> kg/m3 -> mol/L (base de cada componente)
+effluent_states = eff.scope.record[:, :-1] * 1e-3
+states_mol_L = effluent_states * unit_conversion
+
+# [H+] em equilíbrio de cada estado; mesma solução usada internamente pelo modelo
+h_ion = np.array([
+    adm1.solve_pH(state, Ka, unit_conversion)
+    for state in effluent_states
+])
+pH = -np.log10(h_ion)
+
+#Cálculo da Alcalinidade
+# Ka segue ADM1._acid_base_pairs: Ka[0]=Kw, Ka[1]=NH4+/NH3, Ka[2]=CO2/HCO3-,
+# Ka[3:7]=HAc/Ac-, HPr/Pr-, HBu/Bu-, HVa/Va- (dissociação parcial em cada pH)
+EQ_TO_MG_CACO3 = 5e4                                 # 1 equivalente = 50 g CaCO3
+vfa_ids = ('S_ac', 'S_pro', 'S_bu', 'S_va')
+idx = {ID: cmps.index(ID) for ID in ('S_cat', 'S_an', 'S_IN', 'S_IC') + vfa_ids}
+
+oh_ion = Ka[0] / h_ion
+nh3 = Ka[1] * states_mol_L[:, idx['S_IN']] / (Ka[1] + h_ion)
+hco3 = Ka[2] * states_mol_L[:, idx['S_IC']] / (Ka[2] + h_ion)
+vfa_diss = np.sum(
+    states_mol_L[:, [idx[ID] for ID in vfa_ids]] * (Ka[3:7] / (Ka[3:7] + h_ion[:, None])),
+    axis=1,
+)
+
+alk_hco3 = hco3 * EQ_TO_MG_CACO3                     # HCO3- estimado do carbono inorgânico
+alk_vfa = vfa_diss * EQ_TO_MG_CACO3                  # acetato, propionato, butirato e valerato
+alk_total = alk_hco3 + alk_vfa
+
+# S_cat e S_an são íons fortes inertes (nenhum processo os consome): fecham o balanço de cargas
+alk_ions_fortes = (states_mol_L[:, idx['S_cat']] - states_mol_L[:, idx['S_an']]) * EQ_TO_MG_CACO3
+alk_total_conservativa = alk_ions_fortes + states_mol_L[:, idx['S_IN']] * EQ_TO_MG_CACO3
+# Resíduo deve ser ~0: (S_cat - S_an) + S_IN == alcalinidade de bicarbonato + AGVs + NH3 + OH- - H+
+residuo_balanco = (alk_total_conservativa - alk_total
+                   - nh3 * EQ_TO_MG_CACO3 - oh_ion * EQ_TO_MG_CACO3 + h_ion * EQ_TO_MG_CACO3)
+print(f'Resíduo máximo do balanço de cargas: {np.abs(residuo_balanco).max():.2e} mg/L como CaCO3')
+
+#Cálculo da Acidez Volátil Total (AGVs totais)
+acidez_volatil_total = states_mol_L[:, [idx[ID] for ID in vfa_ids]].sum(axis=1) * EQ_TO_MG_CACO3
+#Cálculo da Acidez Titulável (AT)
+acidez_titulavel = (states_mol_L[:, [idx[ID] for ID in vfa_ids]] * (Ka[3:7] / (Ka[3:7] + h_ion[:, None]))).sum(axis=1) * EQ_TO_MG_CACO3
+
+plot_dir = Path("plots")
+plot_dir.mkdir(exist_ok=True)
+
+def plot_and_save(scope, variables, filename):
+    fig, ax = scope.plot_time_series(variables)
+    fig.set_size_inches(8, 4)
+    for line in ax.get_lines():
+        line.set_linewidth(1)
+        line.set_markersize(3)
+    legend = ax.get_legend()
+    if legend is not None:
+        for text in legend.get_texts():
+            text.set_fontsize(8)
+    ax.tick_params(labelsize=8)
+    fig.tight_layout()
+    fig.savefig(plot_dir / filename, dpi=300, bbox_inches="tight")
+    plt.show()
+    plt.close(fig)
+
+# Track the liquid-phase pH over time.
+fig, ax = plt.subplots(figsize=(8, 4))
+ax.plot(eff.scope.time_series, pH, linewidth=1)
+ax.set(xlabel="Time [d]", ylabel="pH", title="Reactor pH")
+fig.tight_layout()
+fig.savefig(plot_dir / "reactor_pH_dyn.png", dpi=300, bbox_inches="tight")
+plt.show()
+plt.close(fig)
+
+# Track how each state variable changes over time
+plot_and_save(eff.scope, ('S_aa', 'S_fa', 'S_va', 'S_bu', 'S_pro', 'S_ac'),
+              "effluent_vfas_dyn.png")
+
+# Inorganic carbon and inorganic nitrogen
+plot_and_save(eff.scope, ('S_IC', 'S_IN'), "effluent_inorganics_dyn.png")
+
+# Biomass
+plot_and_save(eff.scope, ('X_aa', 'X_fa', 'X_c4', 'X_pro', 'X_ac', 'X_h2'),
+              "effluent_biomass_dyn.png")
+
+# Gases
+plot_and_save(gas.scope, ('S_h2',), "gas_hydrogen_dyn.png")
+plot_and_save(gas.scope, ('S_ch4', 'S_IC'), "gas_methane_carbon_dyn.png")
+
+#Influents
+plot_and_save(inf.scope, ('Q', 'S_IC', 'S_IN'), "influent_flowrate_inorganics_dyn.png")
+

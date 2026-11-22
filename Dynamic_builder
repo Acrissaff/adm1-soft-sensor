@@ -1,0 +1,55 @@
+import pandas as pd
+
+# Conversion from kg/m3 to mg/L for the DynamicInfluent CSV
+Fac = 1000
+
+# Set influent flowrate and concentration
+C_mw = 12.0107       # molecular weight of carbon
+N_mw = 14.0067       # molecular weight of nitrogen
+
+Q = 170                                             # influent flowrate [m3/d]
+concentrations_kg_m3 = {
+    'S_su':0.01,
+    'S_aa':1e-3,
+    'S_fa':1e-3,
+    'S_va':1e-3,
+    'S_bu':1e-3,
+    'S_pro':1e-3,
+    'S_ac':1e-3,
+    'S_h2':1e-8,
+    'S_ch4':1e-5,
+    'S_IC':0.04*C_mw,
+    'S_IN':0.01*N_mw,
+    'S_I':0.02,
+    'X_c':2.0,
+    'X_ch':5.0,
+    'X_pr':20.0,
+    'X_li':5.0,
+    'X_aa':1e-2,
+    'X_fa':1e-2,
+    'X_c4':1e-2,
+    'X_pro':1e-2,
+    'X_ac':1e-2,
+    'X_h2':1e-2,
+    'X_I':25,
+    'S_cat':0.04,
+    'S_an':0.02,
+}
+
+
+#Construindo dataframe com os dados de entrada, componentes por coluna e tempo por linha, para alimentar o Dynamic Influent
+df_influent = pd.DataFrame(concentrations_kg_m3, index=[0])
+for i in range(1, 241):  #criando 10 dias de dados de entrada, com passo de 1 hora
+    df_influent = pd.concat([df_influent, pd.DataFrame(concentrations_kg_m3, index=[i])], ignore_index=True)
+# Convert concentration columns once; keep time and flow unchanged.
+df_influent.loc[:, list(concentrations_kg_m3)] *= Fac
+#criando uma coluna de tempo, com 10 dias de simulação, com passo de 1 hora
+df_influent['t'] = pd.date_range(start='2023-01-01', periods=len(df_influent), freq= 'h')
+#Convertendo t em float, com o tempo em dias
+df_influent['t'] = (df_influent['t'] - df_influent['t'].iloc[0]).dt.total_seconds() / (24 * 3600)
+#Adicionando a coluna de vazão, com o valor de Q
+df_influent['Q'] = Q
+#Para t>=5 reduzindo 170 para 5 m3/d, para simular uma perturbação no sistema
+df_influent.loc[df_influent['t'] >= 5, 'Q'] = 100
+
+df_influent.to_csv('influent_data.csv', index=False)

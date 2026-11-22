@@ -1,0 +1,12 @@
+# Normaliza finais de linha no índice; cada sistema usa o seu (core.autocrlf)
+* text=auto
+
+# Binários: nunca normalizar nem tentar diff de texto
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.parquet binary
+*.pkl binary
+*.npy binary
+*.npz binary

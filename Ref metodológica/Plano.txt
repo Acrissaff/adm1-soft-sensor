@@ -1,0 +1,14 @@
+Implementar código:
+- ADM1 - ok
+- Input Dinâmico - ok
+- Cálculo de pH - ok
+- Alcalinidade - ???
+- Acidez - ???
+- Série de Sólidos - ???
+- DQO - ???
+- Amônia - ???
+- Teor de Metano - ???
+
+Para isso preciso derivar modos de cálculo para cada uma destas análises. 
+
+pH - Saiu por solve_pH() - Equações algébricas
