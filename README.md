@@ -26,8 +26,10 @@ aplicá-lo a um cenário real.
 Projeto/
 ├── ADM1                      # Etapa 1: simulação com influente constante
 ├── Dynamic_builder           # Etapa 2: gerador da série temporal de influente (CSV)
-├── ADM1_Dyn                  # Etapa 3: simulação dinâmica (influente variável + pH e alcalinidade)
+├── ADM1_Dyn                  # Etapa 3: simulação dinâmica (influente variável + pH, alcalinidade, acidez, sólidos e DQO)
 ├── influent_data.csv         # saída do Dynamic_builder: 241 h x 25 componentes + t + Q
+├── series_dyn.csv            # saída do ADM1_Dyn: estados de inf/eff/gás + pós-processamento (grade nativa)
+├── dataset_1h.csv            # idem, reamostrado em grade regular de 1 h (241 instantes)
 ├── plots/                    # figuras geradas pelos scripts
 ├── Guias metodológicos/      # documentação metodológica e histórico de decisões
 │   ├── README.md             # índice, convenções e templates
@@ -94,10 +96,12 @@ resultados de referência.
    não seja dominado pelo transiente de partida.
 3. **Observáveis "fáceis"**: derivar do ADM1 pH, alcalinidade total/de bicarbonato, acidez e
    DQO — variáveis que **não** são estados do modelo e precisam de pós-processamento
-   (pH e alcalinidade já implementados no `ADM1_Dyn`).
+   (pH, alcalinidade, acidez, sólidos e DQO já implementados no `ADM1_Dyn`).
 4. **Ruído e amostragem**: simular erro analítico, frequência de amostragem e atraso de
    laboratório para que o dataset se pareça com dados reais.
-5. **Dataset rotulado**: exportar `parquet`/`csv` com grade regular de tempo, sem duplicatas.
+5. **Dataset rotulado**: `series_dyn.csv` (grade nativa) e `dataset_1h.csv` (grade de 1 h)
+   já saem com estados e observáveis; falta avaliar deduplicação das primeiras linhas e
+   formato parquet.
 6. **Baseline de ML**: PLS/regressão regularizada, Random Forest, Gradient Boosting; métricas
    por variável-alvo e validação em cenários não vistos no treino.
 

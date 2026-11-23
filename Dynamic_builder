@@ -50,6 +50,6 @@ df_influent['t'] = (df_influent['t'] - df_influent['t'].iloc[0]).dt.total_second
 #Adicionando a coluna de vazão, com o valor de Q
 df_influent['Q'] = Q
 #Para t>=5 reduzindo 170 para 5 m3/d, para simular uma perturbação no sistema
-df_influent.loc[df_influent['t'] >= 5, 'Q'] = 100
+#df_influent.loc[df_influent['t'] >= 5, 'Q'] = 100
 
 df_influent.to_csv('influent_data.csv', index=False)

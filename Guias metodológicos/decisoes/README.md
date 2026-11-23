@@ -67,3 +67,7 @@ Execuções, números, trechos de código, referências.
 | [0002](0002-influente-dinamico-em-csv.md) | Influente dinâmico em CSV (mg/L, t em dias) | aceita | 20/11/2026 |
 | [0003](0003-ph-no-pos-processamento.md) | pH calculado no pós-processamento | aceita | 21/11/2026 |
 | [0004](0004-alcalinidade-no-pos-processamento.md) | Alcalinidade (bicarbonato, AGVs e total) no pós-processamento | proposta | 21/11/2026 |
+| [0005](0005-acidez-no-pos-processamento.md) | Acidez volátil total (AGVs) no pós-processamento | proposta | 22/11/2026 |
+| [0006](0006-solidos-no-pos-processamento.md) | Sólidos totais e voláteis no pós-processamento | proposta | 22/11/2026 |
+| [0007](0007-dqo-total-no-pos-processamento.md) | DQO total (influente e efluente) no pós-processamento | proposta | 22/11/2026 |
+| [0008](0008-exportacao-csv.md) | Exportação da série simulada em CSV | proposta | 22/11/2026 |

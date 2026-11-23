@@ -102,6 +102,7 @@ sys.simulate(state_reset_hook='reset_cache',
              t_span=(0,t),
              t_eval=np.arange(0, t+t_step, t_step),
              method=method,
+             max_step=t_step,                          # teto de 1 h: grade gravada mais fina
             )
 
 # WasteStreamScope stores concentrations in mg/L; solve_pH expects kg/m3.
@@ -110,51 +111,244 @@ Ka = adm1_params['Ka_base'] * T_correction_factor(
     adm1_params['T_base'], Temp, adm1_params['Ka_dH'])
 unit_conversion = mass2mol_conversion(cmps)
 
-# Todos os instantes registrados: remove a coluna Q, mg/L -> kg/m3 -> mol/L (base de cada componente)
-effluent_states = eff.scope.record[:, :-1] * 1e-3
-states_mol_L = effluent_states * unit_conversion
+# ---------------------------------------------------------------------------
+# Constantes, máscaras de componente e grupos (valem para qualquer grade)
+# ---------------------------------------------------------------------------
+IDs    = list(cmps.IDs)                       # ordem das colunas de scope.record
+i_mass = np.asarray(cmps.i_mass, dtype=float) # kg componente / kg substância medida
+i_COD  = np.asarray(cmps.i_COD, dtype=float)  # kg DQO / kg substância medida
+MW     = np.array([c.chem_MW for c in cmps])  # g/mol
 
-# [H+] em equilíbrio de cada estado; mesma solução usada internamente pelo modelo
-h_ion = np.array([
-    adm1.solve_pH(state, Ka, unit_conversion)
-    for state in effluent_states
-])
-pH = -np.log10(h_ion)
+water    = np.array([ID in ('H2O', 'Water') for ID in IDs])
+diss_gas = np.asarray(cmps.g, dtype=bool)     # True para S_h2, S_ch4, S_IC
+part     = np.array([c.particle_size == 'Particulate' for c in cmps])
 
-#Cálculo da Alcalinidade
+ts_idx  = np.flatnonzero(~water & ~diss_gas)                  # sólidos totais
+vss_idx = np.flatnonzero(part)                                # sólidos voláteis (= TSS)
+cod_idx = np.flatnonzero((i_COD > 0) & ~diss_gas)             # DQO total
+gas_idx = np.flatnonzero(diss_gas | (np.array(IDs) == 'H2O'))  # fase gasosa: gases + vapor
+gas_ids = np.array(IDs)[gas_idx]
+gas_h2o = np.flatnonzero(gas_ids == 'H2O')[0]
+
 # Ka segue ADM1._acid_base_pairs: Ka[0]=Kw, Ka[1]=NH4+/NH3, Ka[2]=CO2/HCO3-,
 # Ka[3:7]=HAc/Ac-, HPr/Pr-, HBu/Bu-, HVa/Va- (dissociação parcial em cada pH)
-EQ_TO_MG_CACO3 = 5e4                                 # 1 equivalente = 50 g CaCO3
+EQ_TO_MG_CACO3 = 5e4                          # 1 equivalente = 50 g CaCO3
 vfa_ids = ('S_ac', 'S_pro', 'S_bu', 'S_va')
 idx = {ID: cmps.index(ID) for ID in ('S_cat', 'S_an', 'S_IN', 'S_IC') + vfa_ids}
+vfa_idx = [idx[ID] for ID in vfa_ids]
 
-oh_ion = Ka[0] / h_ion
-nh3 = Ka[1] * states_mol_L[:, idx['S_IN']] / (Ka[1] + h_ion)
-hco3 = Ka[2] * states_mol_L[:, idx['S_IC']] / (Ka[2] + h_ion)
-vfa_diss = np.sum(
-    states_mol_L[:, [idx[ID] for ID in vfa_ids]] * (Ka[3:7] / (Ka[3:7] + h_ion[:, None])),
-    axis=1,
-)
+# ---------------------------------------------------------------------------
+# Pós-processamento: a mesma rotina serve a qualquer grade de estados
+# ---------------------------------------------------------------------------
+def derivar(estados_efluente, estados_influente, estados_gas, Q_gas):
+    '''Deriva os observáveis a partir dos estados (kg/m3 no líquido, g/m3 no gás).
 
-alk_hco3 = hco3 * EQ_TO_MG_CACO3                     # HCO3- estimado do carbono inorgânico
-alk_vfa = vfa_diss * EQ_TO_MG_CACO3                  # acetato, propionato, butirato e valerato
-alk_total = alk_hco3 + alk_vfa
+    Aplicada sobre uma grade reamostrada, recalcula o equilíbrio ácido-base em cada ponto
+    em vez de interpolar pH/alcalinidade, que não são lineares no estado.
+    '''
+    states_mol_L = estados_efluente * unit_conversion
 
-# S_cat e S_an são íons fortes inertes (nenhum processo os consome): fecham o balanço de cargas
-alk_ions_fortes = (states_mol_L[:, idx['S_cat']] - states_mol_L[:, idx['S_an']]) * EQ_TO_MG_CACO3
-alk_total_conservativa = alk_ions_fortes + states_mol_L[:, idx['S_IN']] * EQ_TO_MG_CACO3
-# Resíduo deve ser ~0: (S_cat - S_an) + S_IN == alcalinidade de bicarbonato + AGVs + NH3 + OH- - H+
-residuo_balanco = (alk_total_conservativa - alk_total
-                   - nh3 * EQ_TO_MG_CACO3 - oh_ion * EQ_TO_MG_CACO3 + h_ion * EQ_TO_MG_CACO3)
-print(f'Resíduo máximo do balanço de cargas: {np.abs(residuo_balanco).max():.2e} mg/L como CaCO3')
+    # [H+] em equilíbrio de cada estado; mesma solução usada internamente pelo modelo
+    h_ion = np.array([
+        adm1.solve_pH(state, Ka, unit_conversion)
+        for state in estados_efluente
+    ])
+    pH = -np.log10(h_ion)
 
-#Cálculo da Acidez Volátil Total (AGVs totais)
-acidez_volatil_total = states_mol_L[:, [idx[ID] for ID in vfa_ids]].sum(axis=1) * EQ_TO_MG_CACO3
-#Cálculo da Acidez Titulável (AT)
-acidez_titulavel = (states_mol_L[:, [idx[ID] for ID in vfa_ids]] * (Ka[3:7] / (Ka[3:7] + h_ion[:, None]))).sum(axis=1) * EQ_TO_MG_CACO3
+    # Alcalinidade
+    oh_ion = Ka[0] / h_ion
+    nh3 = Ka[1] * states_mol_L[:, idx['S_IN']] / (Ka[1] + h_ion)
+    hco3 = Ka[2] * states_mol_L[:, idx['S_IC']] / (Ka[2] + h_ion)
+    vfa_diss = np.sum(
+        states_mol_L[:, vfa_idx] * (Ka[3:7] / (Ka[3:7] + h_ion[:, None])),
+        axis=1,
+    )
+
+    alk_hco3 = hco3 * EQ_TO_MG_CACO3                 # HCO3- estimado do carbono inorgânico
+    alk_vfa = vfa_diss * EQ_TO_MG_CACO3              # acetato, propionato, butirato e valerato
+    alk_total = alk_hco3 + alk_vfa
+
+    # S_cat e S_an são íons fortes inertes (nenhum processo os consome): fecham o balanço de cargas
+    alk_ions_fortes = (states_mol_L[:, idx['S_cat']] - states_mol_L[:, idx['S_an']]) * EQ_TO_MG_CACO3
+    alk_total_conservativa = alk_ions_fortes + states_mol_L[:, idx['S_IN']] * EQ_TO_MG_CACO3
+    # Resíduo deve ser ~0: (S_cat - S_an) + S_IN == alcalinidade de bicarbonato + AGVs + NH3 + OH- - H+
+    residuo_balanco = (alk_total_conservativa - alk_total
+                       - nh3 * EQ_TO_MG_CACO3 - oh_ion * EQ_TO_MG_CACO3 + h_ion * EQ_TO_MG_CACO3)
+
+    # Acidez volátil total (AGVs totais): todas as espécies, em equivalentes de CaCO3
+    acidez_volatil_total = states_mol_L[:, vfa_idx].sum(axis=1) * EQ_TO_MG_CACO3
+
+    # Sólidos como massa de componente (convertidos da substância medida por i_mass)
+    ts_mgL = (estados_efluente[:, ts_idx] @ i_mass[ts_idx]) * 1e3
+    vss_mgL = (estados_efluente[:, vss_idx] @ i_mass[vss_idx]) * 1e3
+    ts_influente_mgL = (estados_influente[:, ts_idx] @ i_mass[ts_idx]) * 1e3
+    vss_influente_mgL = (estados_influente[:, vss_idx] @ i_mass[vss_idx]) * 1e3
+
+    # DQO total: i_COD = 1 no ADM1, então o estado em mg/L já é mg DQO/L
+    cod_mgL = (estados_efluente[:, cod_idx] @ i_COD[cod_idx]) * 1e3
+    cod_influente_mgL = (estados_influente[:, cod_idx] @ i_COD[cod_idx]) * 1e3
+
+    # TAN (mg N/L) e FAN (mg N/L, depende do pH do reator)
+    tan_influente_mgL = estados_influente[:, idx['S_IN']] * 1e3
+    tan_efluente_mgL = estados_efluente[:, idx['S_IN']] * 1e3
+    fan_mgN_L = nh3 * N_mw * 1e3
+
+    # Composição molar do biogás, base úmida e base seca
+    gas_mol_m3 = estados_gas[:, gas_idx] / MW[gas_idx]
+    gas_mol_total = gas_mol_m3.sum(axis=1, keepdims=True)
+    gas_frac_molar = np.divide(gas_mol_m3, gas_mol_total,
+                               out=np.zeros_like(gas_mol_m3), where=gas_mol_total > 0)
+    gas_x_h2o = gas_frac_molar[:, [gas_h2o]]
+    gas_frac_seca = np.divide(gas_frac_molar, 1 - gas_x_h2o,
+                              out=np.zeros_like(gas_frac_molar), where=(1 - gas_x_h2o) > 0)
+
+    return dict(
+        pH=pH, alk_hco3=alk_hco3, alk_vfa=alk_vfa, alk_total=alk_total,
+        alk_conservativa=alk_total_conservativa, residuo_balanco=residuo_balanco,
+        acidez_volatil_total=acidez_volatil_total,
+        ts_mgL=ts_mgL, vss_mgL=vss_mgL,
+        ts_influente_mgL=ts_influente_mgL, vss_influente_mgL=vss_influente_mgL,
+        cod_mgL=cod_mgL, cod_influente_mgL=cod_influente_mgL,
+        tan_influente_mgL=tan_influente_mgL, tan_efluente_mgL=tan_efluente_mgL,
+        fan_mgN_L=fan_mgN_L,
+        gas_frac_molar=gas_frac_molar, gas_frac_seca=gas_frac_seca,
+    )
+
+# ---------------------------------------------------------------------------
+# Grade nativa (passos do solver): gráficos e CSV de auditoria
+# ---------------------------------------------------------------------------
+tempo_nativo    = np.asarray(eff.scope.time_series)
+effluent_states = eff.scope.record[:, :-1] * 1e-3   # mg/L -> kg/m3
+influent_states = inf.scope.record[:, :-1] * 1e-3
+gas_states      = np.asarray(gas.scope.record)[:, :-1]      # g/m3
+gas_Q_m3d       = np.asarray(gas.scope.record)[:, -1]       # m3/d
+
+nat = derivar(effluent_states, influent_states, gas_states, gas_Q_m3d)
+
+# Nomes usados nos gráficos e no resumo (todos na grade nativa)
+pH = nat['pH']
+alk_hco3 = nat['alk_hco3']
+alk_vfa = nat['alk_vfa']
+alk_total = nat['alk_total']
+alk_total_conservativa = nat['alk_conservativa']
+acidez_volatil_total = nat['acidez_volatil_total']
+ts_mgL = nat['ts_mgL']
+vss_mgL = nat['vss_mgL']
+ts_influente_mgL = nat['ts_influente_mgL']
+vss_influente_mgL = nat['vss_influente_mgL']
+cod_mgL = nat['cod_mgL']
+cod_influente_mgL = nat['cod_influente_mgL']
+tan_influente_mgL = nat['tan_influente_mgL']
+tan_efluente_mgL = nat['tan_efluente_mgL']
+fan_mgN_L = nat['fan_mgN_L']
+gas_frac_molar = nat['gas_frac_molar']
+gas_frac_seca = nat['gas_frac_seca']
+print(f'Resíduo máximo do balanço de cargas: {np.abs(nat["residuo_balanco"]).max():.2e} mg/L como CaCO3')
+
+# ---------------------------------------------------------------------------
+# Grade regular de 1 h: reamostra os ESTADOS e recalcula os derivados
+# ---------------------------------------------------------------------------
+grade = np.arange(0, t + 1e-9, t_step)
+grade = grade[grade <= tempo_nativo[-1]]          # protege contra arredondamento de arange
+
+def reamostrar(serie, metodo='linear'):
+    '''Linear para séries contínuas; "ffill" para degraus (o DynamicInfluent é degrau).'''
+    serie = np.asarray(serie, dtype=float)
+    if metodo == 'ffill':
+        i = np.searchsorted(tempo_nativo, grade, side='right') - 1
+        return serie[np.clip(i, 0, len(serie) - 1)]
+    return np.interp(grade, tempo_nativo, serie)
+
+def reamostrar_matriz(matriz, metodo='linear'):
+    matriz = np.asarray(matriz, dtype=float)
+    return np.column_stack([reamostrar(matriz[:, j], metodo) for j in range(matriz.shape[1])])
+
+estados_efl_grade = reamostrar_matriz(effluent_states)
+estados_inf_grade = reamostrar_matriz(influent_states, 'ffill')
+estados_gas_grade = reamostrar_matriz(gas_states)
+
+reg = derivar(estados_efl_grade, estados_inf_grade, estados_gas_grade, reamostrar(gas_Q_m3d))
+print(f'Resíduo máximo do balanço de cargas (grade 1 h): {np.abs(reg["residuo_balanco"]).max():.2e} mg/L como CaCO3')
+
+#Estados em .csv, com tempo em dias, vazão em m3/d e concentrações em mg/L
+def montar_tabela(tempo, inf_mgL, inf_Q, eff_mgL, eff_Q, gas_gm3, gas_Q, derivados):
+    '''Monta a tabela exportável: estados das correntes + variáveis de pós-processamento.'''
+    dados = {'t': np.asarray(tempo)}                          # [d]
+    for prefixo, matriz, Q in (('inf', inf_mgL, inf_Q), ('eff', eff_mgL, eff_Q),
+                               ('gas', gas_gm3, gas_Q)):
+        matriz = np.asarray(matriz)
+        for i, ID in enumerate(IDs):
+            dados[f'{prefixo}_{ID}'] = matriz[:, i]           # mg/L (líquido) | g/m3 (gás)
+        dados[f'{prefixo}_Q'] = np.asarray(Q)                 # m3/d
+    for k, ID in enumerate(gas_ids):                          # composição molar do biogás
+        dados[f'gas_x_{ID}'] = derivados['gas_frac_molar'][:, k]      # mol/mol, base úmida
+        dados[f'gas_x_seca_{ID}'] = derivados['gas_frac_seca'][:, k]  # mol/mol, base seca
+    dados.update({
+        'pH': derivados['pH'],
+        'alk_hco3': derivados['alk_hco3'],
+        'alk_vfa': derivados['alk_vfa'],
+        'alk_total': derivados['alk_total'],
+        'alk_conservativa': derivados['alk_conservativa'],
+        'acidez_volatil_total': derivados['acidez_volatil_total'],
+        'ts_inf': derivados['ts_influente_mgL'],
+        'vss_inf': derivados['vss_influente_mgL'],
+        'ts_eff': derivados['ts_mgL'],
+        'vss_eff': derivados['vss_mgL'],
+        'cod_inf': derivados['cod_influente_mgL'],
+        'cod_eff': derivados['cod_mgL'],
+        'tan_inf': derivados['tan_influente_mgL'],
+        'tan_eff': derivados['tan_efluente_mgL'],
+        'fan_eff': derivados['fan_mgN_L'],
+        })
+    return pd.DataFrame(dados)
+
+def exportar(tabela, path):
+    tabela.to_csv(path, index=False)
+    print(f'Exportado {path}: {tabela.shape[0]} instantes x {tabela.shape[1]} colunas')
+    return tabela
+
+df_series = exportar(montar_tabela(
+    tempo_nativo,
+    inf.scope.record[:, :-1], inf.scope.record[:, -1],
+    eff.scope.record[:, :-1], eff.scope.record[:, -1],
+    gas_states, gas_Q_m3d, nat), 'series_dyn.csv')
+
+df_grade = exportar(montar_tabela(
+    grade,
+    estados_inf_grade * 1e3, reamostrar(inf.scope.record[:, -1], 'ffill'),
+    estados_efl_grade * 1e3, reamostrar(eff.scope.record[:, -1]),
+    estados_gas_grade, reamostrar(gas_Q_m3d), reg), 'dataset_1h.csv')
+
+# Resumo numérico das grandezas derivadas na GRADE NATIVA, para conferência
+# (alcalinidade, acidez e sólidos em mg/L; as de alcalinidade/acidez como CaCO3)
+print(f'\n{"Grandeza":<52}{"mín":>9}{"média":>9}{"máx":>9}')
+for nome, serie in (
+        ('Alcalinidade de bicarbonato', alk_hco3),
+        ('Alcalinidade de AGVs (AGV dissociado)', alk_vfa),
+        ('Alcalinidade total (bicarbonato + AGVs)', alk_total),
+        ('Alcalinidade conservativa (S_cat - S_an + S_IN)', alk_total_conservativa),
+        ('Acidez volátil total (AGVs totais)', acidez_volatil_total),
+        ):
+    print(f'{nome:<52}{serie.min():9.0f}{serie.mean():9.0f}{serie.max():9.0f}')
+# Índice de estabilidade clássico: AGV / alcalinidade (Ripley et al., 1986)
+razao_agv_alk = acidez_volatil_total / alk_total_conservativa
+print(f'{"Razão AGV/alcalinidade conservativa":<52}'
+      f'{razao_agv_alk.min():9.2f}{razao_agv_alk.mean():9.2f}{razao_agv_alk.max():9.2f}')
+
+# Sólidos como massa de componente (convertidos de DQO por i_mass) e DQO total — grade nativa
+print(f'\n{"Sólidos e DQO total [mg/L]":<52}{"mín":>9}{"média":>9}{"máx":>9}')
+for nome, serie in (
+        ('Sólidos totais - influente', ts_influente_mgL),
+        ('Sólidos voláteis - influente', vss_influente_mgL),
+        ('Sólidos totais - efluente', ts_mgL),
+        ('Sólidos voláteis - efluente', vss_mgL),
+        ('DQO total - influente', cod_influente_mgL),
+        ('DQO total - efluente', cod_mgL),
+        ):
+    print(f'{nome:<52}{serie.min():9.0f}{serie.mean():9.0f}{serie.max():9.0f}')
 
 plot_dir = Path("plots")
-plot_dir.mkdir(exist_ok=True)
+plot_dir.mkdir(parents=True, exist_ok=True)
 
 def plot_and_save(scope, variables, filename):
     fig, ax = scope.plot_time_series(variables)
@@ -178,6 +372,56 @@ ax.plot(eff.scope.time_series, pH, linewidth=1)
 ax.set(xlabel="Time [d]", ylabel="pH", title="Reactor pH")
 fig.tight_layout()
 fig.savefig(plot_dir / "reactor_pH_dyn.png", dpi=300, bbox_inches="tight")
+plt.show()
+plt.close(fig)
+
+# Alcalinidade (bicarbonato, AGVs e total) e acidez volátil total, em mg/L como CaCO3
+fig, (ax_alk, ax_ac) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+
+for nome, serie, cor, estilo in (
+        ('Bicarbonate (S_IC)', alk_hco3, 'C0', '-'),
+        ('VFAs (S_ac + S_pro + S_bu + S_va)', alk_vfa, 'C1', '-'),
+        ('Bicarbonate + VFAs', alk_total, 'C2', '-'),
+        ('(S_cat - S_an) + S_IN', alk_total_conservativa, 'C3', '--'),
+        ):
+    ax_alk.plot(eff.scope.time_series, serie, color=cor, linestyle=estilo,
+                linewidth=1, label=nome)
+ax_alk.set(ylabel='Alkalinity [mg/L as CaCO3]', title='Reactor alkalinity')
+ax_alk.legend(fontsize=8)
+
+ax_ac.plot(eff.scope.time_series, acidez_volatil_total, color='C4', linewidth=1,
+           label='Total volatile acidity (all VFAs)')
+ax_ac.set(xlabel='Time [d]', ylabel='Acidity [mg/L as CaCO3]', title='Reactor acidity')
+ax_ac.legend(fontsize=8)
+
+fig.tight_layout()
+fig.savefig(plot_dir / "reactor_alkalinity_dyn.png", dpi=300, bbox_inches="tight")
+plt.show()
+plt.close(fig)
+
+# Sólidos totais e voláteis (acima) e DQO total (abaixo), entrada e saída do reator
+fig, (ax_sol, ax_cod) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
+
+for nome, serie, cor, tempo in (
+        ('TS influent', ts_influente_mgL, 'C0', inf.scope.time_series),
+        ('VSS influent', vss_influente_mgL, 'C1', inf.scope.time_series),
+        ('TS effluent', ts_mgL, 'C2', eff.scope.time_series),
+        ('VSS effluent', vss_mgL, 'C3', eff.scope.time_series),
+        ):
+    ax_sol.plot(tempo, serie, color=cor, linewidth=1, label=nome)
+ax_sol.set(ylabel='Solids [mg/L]', title='Total and volatile solids: influent vs effluent')
+ax_sol.legend(fontsize=8)
+
+for nome, serie, cor, tempo in (
+        ('COD influent', cod_influente_mgL, 'C0', inf.scope.time_series),
+        ('COD effluent', cod_mgL, 'C2', eff.scope.time_series),
+        ):
+    ax_cod.plot(tempo, serie, color=cor, linewidth=1, label=nome)
+ax_cod.set(xlabel='Time [d]', ylabel='COD [mg/L]', title='Total COD: influent vs effluent')
+ax_cod.legend(fontsize=8)
+
+fig.tight_layout()
+fig.savefig(plot_dir / "solids_dyn.png", dpi=300, bbox_inches="tight")
 plt.show()
 plt.close(fig)
 

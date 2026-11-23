@@ -89,7 +89,9 @@ Por isso eles entram em **dois papéis auxiliares**, não como quarta parcela:
 | bicarbonato + AGVs | 4.562 | 5.384 | 6.661 |
 | `(S_cat - S_an) + S_IN` | 4.713 | 5.493 | 6.789 |
 
-Resíduo máximo do balanço de cargas: 4,8 × 10⁻⁸ eq/L. Gera `plots/reactor_alkalinity_dyn.png`.
+Resíduo máximo do balanço de cargas: 4,8 × 10⁻⁸ eq/L. Gera
+`plots/reactor_alkalinity_dyn.png` (painel superior; o inferior traz a acidez volátil total do
+[ADR 0005](0005-acidez-no-pos-processamento.md)).
 
 ## Relacionadas
 

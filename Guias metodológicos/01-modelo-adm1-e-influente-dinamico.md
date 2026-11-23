@@ -44,7 +44,7 @@ A Fase 1 fornece o campo de treinamento (rótulos completos, cenários controlad
 |---|---|
 | [ADM1](../ADM1) | simulação do reator com influente constante |
 | [Dynamic_builder](../Dynamic_builder) | gera a série temporal de influente em CSV (`influent_data.csv`) |
-| [ADM1_Dyn](../ADM1_Dyn) | simulação dinâmica com influente variável e cálculo de pH e alcalinidade do reator |
+| [ADM1_Dyn](../ADM1_Dyn) | simulação dinâmica com influente variável, cálculo de pH, alcalinidade, acidez, sólidos e DQO, e exportação da série em CSV (nativa e em grade de 1 h) |
 | `influent_data.csv` | saída do `Dynamic_builder` |
 | `plots/` | figuras geradas pelos scripts de simulação |
 
@@ -57,6 +57,10 @@ esperadas; os resultados numéricos não têm, por ora, valor de referência de 
 - [0002 — Influente dinâmico em CSV, em mg/L, com t em dias](decisoes/0002-influente-dinamico-em-csv.md)
 - [0003 — pH calculado no pós-processamento](decisoes/0003-ph-no-pos-processamento.md)
 - [0004 — Alcalinidade no pós-processamento](decisoes/0004-alcalinidade-no-pos-processamento.md)
+- [0005 — Acidez no pós-processamento](decisoes/0005-acidez-no-pos-processamento.md)
+- [0006 — Sólidos no pós-processamento](decisoes/0006-solidos-no-pos-processamento.md)
+- [0007 — DQO total no pós-processamento](decisoes/0007-dqo-total-no-pos-processamento.md)
+- [0008 — Exportação da série simulada em CSV](decisoes/0008-exportacao-csv.md)
 
 ## 6. Próximos passos
 
@@ -81,3 +85,4 @@ esperadas; os resultados numéricos não têm, por ora, valor de referência de 
 |---|---|
 | 21/11/2026 | Criação do guia |
 | 21/11/2026 | Simplificação: mantidos apenas contexto, objetivos e visão; detalhes técnicos movidos para os registros de decisão |
+| 22/11/2026 | `ADM1_Dyn` passa a calcular também a acidez (ADR 0005), a série de sólidos (ADR 0006), a DQO total (ADR 0007) e a exportar a série em CSV (ADR 0008) |
